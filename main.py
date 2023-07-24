@@ -1,12 +1,12 @@
 import datetime
 import json
-import os.path
+import pathlib
 import time
-from pprint import pprint
-from dataclasses import dataclass, field, is_dataclass, asdict
-import requests
-from bs4 import BeautifulSoup as bs
-import re
+
+from Parser import Parser
+from JSONDataHandler import JSONDataHandler
+from Specialization import Specialization, EnhancedJSONEncoder
+
 
 CONTENT = r'''<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
 <html>
@@ -37,9 +37,9 @@ td.vr {color:black; text-align:right; vertical-align:middle; font-weight:bold ; 
 <br>При общем конкурсе абитуриент учитывается по первой указанной в заявлении специальности</b></font></p>
 
 <form method="post" action="./formk1?id=32" id="aspnetForm">
-<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="/wEPDwUKMjE0MjE5MDYwMQ9kFgICAg9kFgJmD2QWBgIDDw8WAh4EVGV4dAUQMjEuMDcuMjAyMyAxOTowNGRkAgUPD2QWAh4Fc3R5bGUFWkZPTlQtU0laRToxMnB4O0NPTE9SOiNmZmZmZmY7O0ZPTlQtRkFNSUxZOkFyaWFsLCBIZWx2ZXRpY2EsIHNhbnMtc2VyaWY7Ym9yZGVyLXdpZHRoOjoxcHg7O2QCBw8PFgIfAGVkZGRW/+E6pqkyE+coJz8ha+BXLJHU+XBqyj+8MHw4k64U7Q==" />
+<input type="hidden" spec_name="__VIEWSTATE" id="__VIEWSTATE" value="/wEPDwUKMjE0MjE5MDYwMQ9kFgICAg9kFgJmD2QWBgIDDw8WAh4EVGV4dAUQMjEuMDcuMjAyMyAxOTowNGRkAgUPD2QWAh4Fc3R5bGUFWkZPTlQtU0laRToxMnB4O0NPTE9SOiNmZmZmZmY7O0ZPTlQtRkFNSUxZOkFyaWFsLCBIZWx2ZXRpY2EsIHNhbnMtc2VyaWY7Ym9yZGVyLXdpZHRoOjoxcHg7O2QCBw8PFgIfAGVkZGRW/+E6pqkyE+coJz8ha+BXLJHU+XBqyj+8MHw4k64U7Q==" />
 
-<input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="75C1B798" />
+<input type="hidden" spec_name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="75C1B798" />
     <p align=left><span id="Abit_K11_lbFormName"><b><font size="4"></font></b></span></p>
     <span id="Abit_K11_lbCurrentDateTime">21.07.2023 19:04</span>
     <table id="Abit_K11_TableResults" cellspacing="0" border="1px" bordercolor="Black" bgcolor="White" style="FONT-SIZE:12px;COLOR:#ffffff;;FONT-FAMILY:Arial, Helvetica, sans-serif;border-width::1px;;">
@@ -414,9 +414,9 @@ td.vr {color:black; text-align:right; vertical-align:middle; font-weight:bold ; 
 	</tr>
 </table>
 <br />
-<a name="Footer"></a>
+<a spec_name="Footer"></a>
 <span id="Abit_K11_lbTextFooterSumBall"></span><br />
-<a name="FooterProhBall"></a><span id="Abit_K11_lbTextFooterProhBall"></span><br />
+<a spec_name="FooterProhBall"></a><span id="Abit_K11_lbTextFooterProhBall"></span><br />
 <span id="Abit_K11_lbTextFooter"></span><br />
 <span id="Abit_K11_lbTextFooterCommon"></span>
 </form>
@@ -428,138 +428,30 @@ Process finished with exit code 0
 '''
 
 
-@dataclass
-class Specializacion:
-    timestamp: datetime.datetime = 0
-    faculty: str = ''
-    spec_name: str = ''
-    plan_all: int = 0
-    plan_goal: int = 0
-    plan_paid: int = 0
-    got_all: int = 0
-    got_goal: int = 0
-    got_no_exams: int = 0
-    got_no_comp: int = 0
-    got_with_comp: int = 0
-    amounts: list[int] = field(default_factory=list)
-
-    def __getitem__(self, key):
-        return self.amounts[key]
-
-    def __str__(self):
-        return f'''План приема:
-    факультет: {self.faculty}
-    специальность: {self.spec_name}
-    всего: {self.plan_all}
-    целевое: {self.plan_goal}
-    оплата: {self.plan_paid}
-
-Подано:
-    всего: {self.got_all}
-    целевое: {self.got_goal}
-    без вступительных экзаменов: {self.got_no_exams}
-    вне конкурса: {self.got_no_comp}
-    по конкурсу: {self.got_with_comp}
-
-Баллы:
-    ''' + '\n\t'.join([f'{i} - {i - 4}: {amount}' for i, amount in zip(range(400, 119, -5), self.amounts)])
-
-
-class EnhancedJSONEncoder(json.JSONEncoder):
-    def default(self, o):
-        if is_dataclass(o):
-            return asdict(o)
-        return super().default(o)
-
-
-class Parser:
-    url = 'https://abit.bsu.by/formk1?id=32'
-
-    time_mask = r'<span id="Abit_K11_lbCurrentDateTime">(.*?)</span>'
-    groups_mask = r'<td class="fl" colspan="68"><font color="Black">.*?</font></td>[\s\S]*?<td colspan="68"><font color="Black">&nbsp;</font></td>'
-    group_name_mask = r'<td class="fl" colspan="68"><font color="Black">(.*?)</font></td>'
-    specs_mask = r'<td class="vl"><font color="Black">.*'
-    spec_name_mask = r'<td class="vl"><font color="Black">(.*?)</font></td><td>'
-    spec_values_mask = r'">(\d*?)<'
-
-    async def update_all(self, path: str = '.', save_html=False):
-        parse_time = datetime.datetime.strptime(re.findall(self.time_mask, CONTENT)[0], '%d.%m.%Y %H:%M')
-
-        if save_html:
-            with open(f'{parse_time.strftime("%d.%m.%Y_%H.%M")}.html', 'w', encoding='windows-1251') as f:
-                f.write(CONTENT)
-        pass
-
-        groups_text = re.findall(self.groups_mask, CONTENT)
-
-        for group_text in groups_text:
-            group_name = re.findall(self.group_name_mask, group_text)[0].strip()
-
-            specs_text = re.findall(self.specs_mask, group_text)
-
-            path += f'/data/{group_name}'
-            if not os.path.exists(path):
-                os.mkdir(path)
-
-            for spec in specs_text:
-                name = re.findall(self.spec_name_mask, spec)[0].strip()
-                values = re.findall(self.spec_values_mask, spec)
-                values = [int(i) if i else 0 for i in values]
-
-                path += f'/{name}'
-                if not os.path.exists(path):
-                    os.mkdir(path)
-
-                path += f'/{parse_time.strftime("%d.%m.%Y_%H.%M")}.json'
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(Specializacion(parse_time, group_name, name, *values[1:9], values[9:]),
-                              f,
-                              cls=EnhancedJSONEncoder,
-                              default=str)
 def main():
-    url = 'https://abit.bsu.by/formk1?id=32'
 
-    # global CONTENT
-    # CONTENT = requests.get(url).text
+    p = Parser()
+    handler = JSONDataHandler()
 
-    # print(CONTENT)
+    data = p.get_all(save_html=True)
+    handler.save_all('./data', data)
+    
+    print(f'{datetime.datetime.now()} : got new update')
+    while True:
+        if not p.update():
+            time.sleep(10 * 60)
+            continue
 
-    time_mask = r'<span id="Abit_K11_lbCurrentDateTime">(.*?)</span>'
-    parse_time = datetime.datetime.strptime(re.findall(time_mask, CONTENT)[0], '%d.%m.%Y %H:%M')
+        handler.save_all('.data', p.get_all(save_html=True))
+        print(f'{datetime.datetime.now()} : got new update')
 
-    # with open(f'{parse_time.strftime("%d.%m.%Y_%H.%M")}.html', 'w', encoding='windows-1251') as f:
-    #     f.write(CONTENT)
+        time.sleep(10 * 60)
 
-    groups_mask = r'<td class="fl" colspan="68"><font color="Black">.*?</font></td>[\s\S]*?<td colspan="68"><font color="Black">&nbsp;</font></td>'
-    groups_text = re.findall(groups_mask, CONTENT)
 
-    for group_text in groups_text:
-        group_name_mask = r'<td class="fl" colspan="68"><font color="Black">(.*?)</font></td>'
-        group_name = re.findall(group_name_mask, group_text)[0].strip()
+    # print(Specialization(*json.load(f).values()))
+    # json.dump(specs[0], f, cls=EnhancedJSONEncoder)
 
-        specs_mask = r'<td class="vl"><font color="Black">.*'
-        specs_text = re.findall(specs_mask, group_text)
-
-        spec_name_mask = r'<td class="vl"><font color="Black">(.*?)</font></td><td>'
-        spec_values_mask = r'">(\d*?)<'
-
-        if not os.path.exists(f'data/{group_name}'):
-            os.mkdir(f'data/{group_name}')
-
-        for spec in specs_text:
-            name = re.findall(spec_name_mask, spec)[0].strip()
-            values = re.findall(spec_values_mask, spec)
-            values = [int(i) if i else 0 for i in values]
-
-            if not os.path.exists(f'data/{group_name}/{name}'):
-                os.mkdir(f'data/{group_name}/{name}')
-
-            with open(f'data/{group_name}/{name}/{parse_time.strftime("%d.%m.%Y_%H.%M")}.json', 'w',
-                      encoding='utf-8') as f:
-                json.dump(Specializacion(parse_time, group_name, name, *values[1:9], values[9:]), f,
-                          cls=EnhancedJSONEncoder, default=str)
-                # print(Specializacion(*json.load(f).values()))
-                # json.dump(specs[0], f, cls=EnhancedJSONEncoder)
+    print(123)
 
 
 if __name__ == '__main__':
